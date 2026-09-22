@@ -20,6 +20,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local SoundService = game:GetService("SoundService")
 
 -- \\ Variables // --
 
@@ -89,7 +91,44 @@ local CONST = {
 				Range = 40,
 				Amount = 125,
                 IgnoreHiding = false
+            },
+
+			-- \\ Jumpscare // --
+			Jumpscare = {
+				true,
+				{
+					Image1 = "rbxassetid://11417375410",
+					Image2 = "rbxassetid://11417375410",
+
+					Shake = true,
+
+					Sound1 = {
+						10483790459,
+						{
+							Volume = 0.5
+						}
+					},
+
+					Sound2 = {
+						5263560566,
+						{
+							Volume = 0.5
+						}
+					},
+
+					Flashing = {
+						true,
+						Color3.fromRGB(50, 115, 108)
+					},
+
+					Tease = {
+						false,
+						Min = 1,
+						Max = 5
+					}
+				}
 			},
+
 			Rebounding = {
 				Enabled = true,
 				Type = "Ambush", -- "Blitz"
@@ -284,6 +323,160 @@ local function HasEquipped(name: string): boolean
 		return true, tool
 	end
 	return false
+end
+
+-- \\ Jumpscare // --
+
+local function PlayJumpscare(config)
+	if not config or config[1] ~= true then
+		return
+	end
+
+	local s = config[2]
+	if not s then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "JumpscareGui"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 999999
+	gui.Parent = CoreGui
+
+	local bg = Instance.new("Frame")
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.new(0, 0, 0)
+	bg.BorderSizePixel = 0
+	bg.Parent = gui
+
+	local face = Instance.new("ImageLabel")
+	face.AnchorPoint = Vector2.new(0.5, 0.5)
+	face.Position = UDim2.fromScale(0.5, 0.5)
+	face.Size = UDim2.fromOffset(150, 150)
+	face.BackgroundTransparency = 1
+	face.ImageTransparency = 0
+	face.ResampleMode = Enum.ResamplerMode.Pixelated
+
+	pcall(function()
+		face.Image = LoadCustomAsset(s.Image1)
+	end)
+
+	face.Parent = gui
+
+	local function LoadSound(data)
+		if not data then
+			return
+		end
+
+		local sound = Instance.new("Sound")
+		sound.SoundId = "rbxassetid://" .. tostring(data[1])
+
+		for property, value in pairs(data[2] or {}) do
+			pcall(function()
+				sound[property] = value
+			end)
+		end
+
+		sound.Parent = SoundService
+		return sound
+	end
+
+	local sound1 = LoadSound(s.Sound1)
+	local sound2 = LoadSound(s.Sound2)
+
+	-- \\ Tease // --
+	if s.Tease and s.Tease[1] then
+		for i = 1, math.random(s.Tease.Min or 1, s.Tease.Max or 5) do
+			if sound1 then
+				sound1:Play()
+			end
+
+			task.wait(math.random(100, 200) / 100)
+
+			local size = 150 + i * 75
+			face.Size = UDim2.fromOffset(size, size)
+		end
+	end
+
+	-- \\ Flashing // --
+	local flashThread
+
+	if s.Flashing and s.Flashing[1] then
+		flashThread = task.spawn(function()
+			while gui.Parent do
+				bg.BackgroundColor3 = s.Flashing[2] or Color3.new(1, 1, 1)
+				task.wait(math.random(25, 100) / 1000)
+
+				bg.BackgroundColor3 = Color3.new(0, 0, 0)
+				task.wait(math.random(25, 100) / 1000)
+			end
+		end)
+	end
+
+	-- \\ Shake // --
+	local shakeConnection
+
+	if s.Shake then
+		shakeConnection = RunService.RenderStepped:Connect(function()
+			if not face.Parent then
+				return
+			end
+
+			face.Position = UDim2.new(
+				0.5,
+				math.random(-35, 35),
+				0.5,
+				math.random(-10, 10)
+			)
+
+			face.Rotation = math.random(-5, 5)
+		end)
+	end
+
+	-- \\ Image 2 + Sound 2 // --
+	pcall(function()
+		face.Image = LoadCustomAsset(s.Image2)
+	end)
+
+	if sound2 then
+		sound2:Play()
+	end
+
+	-- \\ Zoom // --
+	local camera = workspace.CurrentCamera
+	local zoomSize = (camera and camera.ViewportSize.Y or 1080) * 3
+
+	TweenService:Create(
+		face,
+		TweenInfo.new(1.5, Enum.EasingStyle.Linear),
+		{
+			Size = UDim2.fromOffset(zoomSize, zoomSize),
+			ImageTransparency = 0
+		}
+	):Play()
+
+	task.wait(1.5)
+
+	if shakeConnection then
+		shakeConnection:Disconnect()
+	end
+
+	if flashThread then
+		task.cancel(flashThread)
+	end
+
+	if sound1 then
+		sound1:Destroy()
+	end
+
+	if sound2 then
+		sound2:Destroy()
+	end
+
+	if gui then
+		gui:Destroy()
+	end
 end
 
 local function CrucifixEntity(entity: any)
@@ -572,6 +765,12 @@ local function DamagePlayer(entity: any)
     task.spawn(entity.RunCallback, entity, "OnDamagePlayer", newHealth)
 
     if newHealth == 0 then
+
+        -- \\ Jumpscare // --
+        task.spawn(function()
+            PlayJumpscare(config.Jumpscare)
+        end)
+
         -- Death hints
         if #config.Death.Hints > 0 then
             PlayerGui.MainUI.Death:GetPropertyChangedSignal("Visible"):Wait()
@@ -1058,8 +1257,8 @@ Module.Run = function(self, entity: any, copyEntity: boolean)
                             cloned[i] = v
                         end
 
-                        cloned[1] = camShake.Values[1] / camShake.Range * (camShake.Range - mag) -- Magnitude
-                        cloned[2] = camShake.Values[2] / camShake.Range * (camShake.Range - mag) -- Roughness
+                        cloned[1] = camShake.Values[1] / camShake.Range * (camShake.Range - mag)
+                        cloned[2] = camShake.Values[2] / camShake.Range * (camShake.Range - mag)
                         Modules.Main_Game.camShaker:ShakeOnce(table.unpack(cloned))
                     end
                 end
@@ -1115,6 +1314,7 @@ Module.Run = function(self, entity: any, copyEntity: boolean)
                     end
                 end
             end
+
         elseif reboundType == "BLITZ" then
             local nodesToCurrent, _ = GetPathfindNodesBlitz(config)
 	
@@ -1138,7 +1338,7 @@ Module.Run = function(self, entity: any, copyEntity: boolean)
                     return
                 end
 
-                local randomNode: BasePart? = nil;
+                local randomNode: BasePart? = nil
                 if config.Movement.Reversed == false then
                     randomNode = roomNodes[math.random(1, #roomNodes - 1)]
                 else
@@ -1191,6 +1391,7 @@ Module.Run = function(self, entity: any, copyEntity: boolean)
 end
 
 if not getgenv()._internal_vynixu_entity_spawner then
+	if not getgenv()._internal_vynixu_entity_spawner then
 	getgenv()._internal_vynixu_entity_spawner = true
 
 	local function GetAmbient(room: Model): Color3
@@ -1215,7 +1416,7 @@ if not getgenv()._internal_vynixu_entity_spawner then
                 instance:Clone().Parent = latestRoom
             end
         end
-	end)
+    end)
 end
 
 Module.Clear = function(self)
