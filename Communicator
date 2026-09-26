@@ -1,0 +1,373 @@
+if getgenv().VynixuCommunicator then
+    return getgenv().VynixuCommunicator
+end
+
+-- \\ Services // --
+
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
+local HttpService = game:GetService("HttpService")
+
+-- \\ Variables // --
+
+local LocalPlayer = Players.LocalPlayer
+
+local Communicator = {
+    Config = {
+        ExcludeSelf = true
+    }
+}
+
+local Internal = {
+    Frequency = "VynixuCommunicator",
+    Connections = {},
+    Callbacks = {},
+    Pings = {},
+    Destroyed = false
+}
+
+-- \\ Get Text Channel // --
+
+local TextChannels = TextChatService:FindFirstChild("TextChannels")
+
+if not TextChannels then
+    TextChannels = TextChatService:WaitForChild("TextChannels", 10)
+end
+
+if not TextChannels then
+    warn("[Vynixu Communicator] TextChannels not found.")
+    return nil
+end
+
+local RBXGeneral = TextChannels:FindFirstChild("RBXGeneral")
+
+if not RBXGeneral then
+    RBXGeneral = TextChannels:WaitForChild("RBXGeneral", 10)
+end
+
+if not RBXGeneral then
+    warn("[Vynixu Communicator] RBXGeneral not found.")
+    return nil
+end
+
+if not RBXGeneral:IsA("TextChannel") then
+    warn("[Vynixu Communicator] RBXGeneral is not a TextChannel.")
+    return nil
+end
+
+-- \\ Set Frequency // --
+
+function Communicator:SetFrequency(freq)
+    assert(
+        typeof(freq) == "string",
+        "Frequency must be a string."
+    )
+
+    assert(
+        not freq:find("|"),
+        "Invalid frequency: character '|' is reserved."
+    )
+
+    if Internal.Destroyed then
+        return
+    end
+
+    Internal.Frequency = freq
+end
+
+-- \\ Send // --
+
+function Communicator:Send(command, ...)
+    if Internal.Destroyed then
+        return false
+    end
+
+    if typeof(command) ~= "string" or command == "" then
+        warn("[Vynixu Communicator] Invalid command.")
+        return false
+    end
+
+    if command:find("|") then
+        warn("[Vynixu Communicator] Command contains reserved character '|'.")
+        return false
+    end
+
+    local args = {...}
+
+    for i, value in ipairs(args) do
+        if typeof(value) == "string" and value:find("|") then
+            warn(
+                "[Vynixu Communicator] Argument "
+                .. tostring(i)
+                .. " contains reserved character '|'."
+            )
+
+            return false
+        end
+    end
+
+    local success, encoded = pcall(function()
+        return HttpService:JSONEncode(args)
+    end)
+
+    if not success then
+        warn(
+            "[Vynixu Communicator] Failed to encode command arguments:",
+            encoded
+        )
+
+        return false
+    end
+
+    local message =
+        Internal.Frequency
+        .. "|"
+        .. command
+        .. "|"
+        .. encoded
+
+    local sent, result = pcall(function()
+        return RBXGeneral:SendAsync("", message)
+    end)
+
+    if not sent then
+        warn(
+            "[Vynixu Communicator] SendAsync failed:",
+            result
+        )
+
+        return false
+    end
+
+    return true
+end
+
+-- \\ Listen // --
+
+function Communicator:Listen(command, callback)
+    assert(
+        typeof(command) == "string",
+        "Command must be a string."
+    )
+
+    assert(
+        typeof(callback) == "function",
+        "Callback must be a function."
+    )
+
+    if Internal.Destroyed then
+        return
+    end
+
+    Internal.Callbacks[command] = callback
+end
+
+-- \\ Stop Listening // --
+
+function Communicator:Unlisten(command)
+    if Internal.Destroyed then
+        return
+    end
+
+    Internal.Callbacks[command] = nil
+end
+
+-- \\ Ping // --
+
+function Communicator:Ping(timeout, includeSelf)
+    if Internal.Destroyed then
+        return {}
+    end
+
+    timeout = tonumber(timeout) or 1
+    includeSelf = includeSelf == true
+
+    local responders = {}
+
+    if includeSelf then
+        table.insert(responders, LocalPlayer)
+    end
+
+    if #Players:GetPlayers() <= 1 then
+        return responders
+    end
+
+    local id = tostring(math.floor(os.clock() * 1000000))
+    local command = "Ping_" .. id
+    local pongCommand = "Pong_" .. id
+
+    Internal.Pings[pongCommand] = function(sender)
+        if sender and not table.find(responders, sender) then
+            table.insert(responders, sender)
+        end
+    end
+
+    self:Send(command)
+
+    task.wait(timeout)
+
+    Internal.Pings[pongCommand] = nil
+
+    return responders
+end
+
+-- \\ Incoming Messages // --
+
+Internal.Connections.MessageReceived =
+    TextChatService.MessageReceived:Connect(function(message)
+
+        if Internal.Destroyed then
+            return
+        end
+
+        if not message then
+            return
+        end
+
+        local metadata = message.Metadata
+        local textSource = message.TextSource
+
+        if not metadata or not textSource then
+            return
+        end
+
+        local isLocal =
+            textSource.UserId == LocalPlayer.UserId
+
+        if Internal.Frequency == nil then
+            return
+        end
+
+        if Communicator.Config.ExcludeSelf and isLocal then
+            return
+        end
+
+        -- Split metadata safely
+        local split = string.split(metadata, "|")
+
+        local frequency = split[1]
+        local command = split[2]
+        local encodedArgs = split[3]
+
+        if frequency ~= Internal.Frequency then
+            return
+        end
+
+        if not command or command == "" then
+            return
+        end
+
+        -- Decode arguments safely
+        local args = {}
+
+        if encodedArgs and encodedArgs ~= "" then
+            local success, decoded = pcall(function()
+                return HttpService:JSONDecode(encodedArgs)
+            end)
+
+            if not success then
+                warn(
+                    "[Vynixu Communicator] Failed to decode message:",
+                    decoded
+                )
+
+                return
+            end
+
+            if typeof(decoded) == "table" then
+                args = decoded
+            end
+        end
+
+        -- Find sender
+        local sender =
+            Players:GetPlayerByUserId(textSource.UserId)
+
+        if not sender then
+            return
+        end
+
+        -- \\ Ping // --
+
+        if command:sub(1, 5) == "Ping_" then
+            if not isLocal then
+                local id = command:sub(6)
+
+                self:Send("Pong_" .. id)
+            end
+
+            return
+        end
+
+        -- \\ Pong // --
+
+        if command:sub(1, 5) == "Pong_" then
+            local callback = Internal.Pings[command]
+
+            if typeof(callback) == "function" then
+                task.spawn(function()
+                    pcall(callback, sender)
+                end)
+            end
+
+            return
+        end
+
+        -- \\ Normal Command // --
+
+        local callback =
+            Internal.Callbacks[command]
+
+        if typeof(callback) ~= "function" then
+            return
+        end
+
+        task.spawn(function()
+            local success, err = pcall(
+                callback,
+                sender,
+                table.unpack(args)
+            )
+
+            if not success then
+                warn(
+                    "[Vynixu Communicator] Error in command '"
+                    .. command
+                    .. "':",
+                    err
+                )
+            end
+        end)
+    end)
+
+-- \\ Destroy // --
+
+function Communicator:Destroy()
+
+    if Internal.Destroyed then
+        return
+    end
+
+    Internal.Destroyed = true
+
+    for name, connection in pairs(Internal.Connections) do
+        if connection then
+            pcall(function()
+                connection:Disconnect()
+            end)
+        end
+
+        Internal.Connections[name] = nil
+    end
+
+    table.clear(Internal.Callbacks)
+    table.clear(Internal.Pings)
+
+    Internal.Frequency = nil
+end
+
+-- \\ Global // --
+
+getgenv().VynixuCommunicator = Communicator
+
+return Communicator
